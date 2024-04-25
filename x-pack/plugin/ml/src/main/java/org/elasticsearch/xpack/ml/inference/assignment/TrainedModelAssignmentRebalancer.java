@@ -392,6 +392,8 @@ class TrainedModelAssignmentRebalancer {
         }
 
         if (deployment.memoryBytes() > assignmentPlan.getRemainingNodeMemory(node.getId())) {
+            logger.info("!!!Rassyan deployment.memoryBytes():" + deployment.memoryBytes());
+            logger.info("!!!Rassyan assignmentPlan.getRemainingNodeMemory(node.getId()):" + assignmentPlan.getRemainingNodeMemory(node.getId()));
             // If any ML processes are running on a node we require some space to load the shared libraries.
             // So if none are currently running then this per-node overhead must be added to the requirement.
             // From node load we know if we had any jobs or models assigned before the rebalance.

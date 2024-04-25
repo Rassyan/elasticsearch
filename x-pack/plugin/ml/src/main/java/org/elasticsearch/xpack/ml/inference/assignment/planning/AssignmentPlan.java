@@ -10,7 +10,10 @@ package org.elasticsearch.xpack.ml.inference.assignment.planning;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.Maps;
 import org.elasticsearch.core.Tuple;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xpack.core.ml.inference.assignment.Priority;
+import org.elasticsearch.xpack.ml.utils.StackUtil;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -28,6 +31,8 @@ import java.util.stream.Collectors;
  * A plan describing how models should be assigned to nodes.
  */
 public class AssignmentPlan implements Comparable<AssignmentPlan> {
+
+    private static final Logger logger = LogManager.getLogger(AssignmentPlan.class);
 
     public record Deployment(
         String id,
@@ -48,6 +53,7 @@ public class AssignmentPlan implements Comparable<AssignmentPlan> {
             int maxAssignedAllocations
         ) {
             this(id, memoryBytes, allocations, threadsPerAllocation, currentAllocationsByNodeId, maxAssignedAllocations, Priority.NORMAL);
+            logger.info("!!!Rassyan memoryBytes:" + memoryBytes + "\n" + StackUtil.getStack(100));
         }
 
         int getCurrentAssignedAllocations() {
@@ -335,7 +341,10 @@ public class AssignmentPlan implements Comparable<AssignmentPlan> {
 
             long additionalModelMemory = isAlreadyAssigned(deployment, node) ? 0 : deployment.memoryBytes;
             assignments.get(deployment).compute(node, (n, remAllocations) -> remAllocations + allocations);
-            remainingNodeMemory.compute(node, (n, remMemory) -> remMemory - additionalModelMemory);
+            remainingNodeMemory.compute(node, (n, remMemory) -> {
+                logger.info("!!!Rassyan flag:" + (remMemory - additionalModelMemory < 0) +" remMemory:" + remMemory + " additionalModelMemory:" + additionalModelMemory + "\n" + StackUtil.getStack(100));
+                return remMemory - additionalModelMemory;
+            });
             if (deployment.priority == Priority.NORMAL) {
                 remainingNodeCores.compute(node, (n, remCores) -> remCores - allocations * deployment.threadsPerAllocation());
             }
@@ -348,7 +357,10 @@ public class AssignmentPlan implements Comparable<AssignmentPlan> {
         }
 
         public void accountMemory(Deployment m, Node n) {
-            remainingNodeMemory.computeIfPresent(n, (k, v) -> v - m.memoryBytes());
+            remainingNodeMemory.computeIfPresent(n, (k, v) -> {
+                logger.info("!!!Rassyan flag:" + (v - m.memoryBytes() < 0) +"v:" + v + " m.memoryBytes():" + m.memoryBytes() + "\n" + StackUtil.getStack(100));
+                return v - m.memoryBytes();
+            });
         }
 
         public AssignmentPlan build() {

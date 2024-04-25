@@ -7,6 +7,8 @@
 
 package org.elasticsearch.xpack.core.ml.action;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.TransportVersions;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.ActionType;
@@ -44,6 +46,8 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstr
 import static org.elasticsearch.xpack.core.ml.MlTasks.trainedModelAssignmentTaskDescription;
 
 public class StartTrainedModelDeploymentAction extends ActionType<CreateTrainedModelAssignmentAction.Response> {
+
+    private static final Logger logger = LogManager.getLogger(StartTrainedModelDeploymentAction.class);
 
     public static final StartTrainedModelDeploymentAction INSTANCE = new StartTrainedModelDeploymentAction();
     public static final String NAME = "cluster:admin/xpack/ml/trained_models/deployment/start";
@@ -726,6 +730,10 @@ public class StartTrainedModelDeploymentAction extends ActionType<CreateTrainedM
             if (perDeploymentMemoryBytes == 0 && perAllocationMemoryBytes == 0) {
                 return baseSize;
             } else {
+                logger.info("!!!Rassyan Estimating memory usage for model [{}], total definition length [{}], per deployment memory [{}], "
+                                + "per allocation memory [{}], number of allocations [{}], base size [{}], new size [{}]",
+                        modelId, totalDefinitionLength, perDeploymentMemoryBytes, perAllocationMemoryBytes, numberOfAllocations, baseSize,
+                        perDeploymentMemoryBytes + perAllocationMemoryBytes * numberOfAllocations + totalDefinitionLength);
                 return Math.max(
                     baseSize,
                     perDeploymentMemoryBytes + perAllocationMemoryBytes * numberOfAllocations + totalDefinitionLength
