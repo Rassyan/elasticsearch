@@ -421,6 +421,7 @@ public class DesiredBalanceComputer {
                     iterationTime.toString(),
                     maxIterationTime.toString()
                 );
+                finishReason = DesiredBalance.ComputationFinishReason.STOP_EARLY;
                 break;
             }
 
