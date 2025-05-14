@@ -70,8 +70,17 @@ public class DesiredBalanceComputer {
         Setting.Property.NodeScope
     );
 
+    public static final Setting<TimeValue> MAX_ITERATION_TIME_SETTING = Setting.timeSetting(
+        "cluster.routing.allocation.desired_balance.max_iteration_time",
+        TimeValue.timeValueMinutes(5),
+        TimeValue.timeValueSeconds(5),
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
     private TimeValue progressLogInterval;
     private long maxBalanceComputationTimeDuringIndexCreationMillis;
+    private TimeValue maxIterationTime;
     private long numComputeCallsSinceLastConverged;
     private long numIterationsSinceLastConverged;
     private long lastConvergedTimeMillis;
@@ -91,6 +100,7 @@ public class DesiredBalanceComputer {
             MAX_BALANCE_COMPUTATION_TIME_DURING_INDEX_CREATION_SETTING,
             value -> this.maxBalanceComputationTimeDuringIndexCreationMillis = value.millis()
         );
+        clusterSettings.initializeAndWatch(MAX_ITERATION_TIME_SETTING, value -> this.maxIterationTime = value);
     }
 
     public DesiredBalance compute(
@@ -342,6 +352,7 @@ public class DesiredBalanceComputer {
                 nextReportTime = currentTime + timeWarningInterval;
             }
 
+            TimeValue iterationTime = TimeValue.timeValueMillis(currentTime - computationStartedTime);
             if (hasChanges == false && hasEnoughIterations(i)) {
                 if (numComputeCallsSinceLastConverged > 1) {
                     logger.log(
@@ -355,7 +366,7 @@ public class DesiredBalanceComputer {
                             numIterationsSinceLastConverged,
                             numComputeCallsSinceLastConverged,
                             iterations,
-                            TimeValue.timeValueMillis(currentTime - computationStartedTime).toString()
+                            iterationTime.toString()
                         )
                     );
                 } else {
@@ -381,7 +392,7 @@ public class DesiredBalanceComputer {
                     "Desired balance computation for [{}] interrupted after [{}] and [{}] iterations as newer cluster state received. "
                         + "Publishing intermediate desired balance and restarting computation",
                     desiredBalanceInput.index(),
-                    TimeValue.timeValueMillis(currentTime - computationStartedTime).toString(),
+                    iterationTime.toString(),
                     i
                 );
                 finishReason = DesiredBalance.ComputationFinishReason.YIELD_TO_NEW_INPUT;
@@ -395,11 +406,21 @@ public class DesiredBalanceComputer {
                         + "in order to not delay assignment of newly created index shards for more than [{}]. "
                         + "Publishing intermediate desired balance and restarting computation",
                     desiredBalanceInput.index(),
-                    TimeValue.timeValueMillis(currentTime - computationStartedTime).toString(),
+                    iterationTime.toString(),
                     i,
                     TimeValue.timeValueMillis(maxBalanceComputationTimeDuringIndexCreationMillis).toString()
                 );
                 finishReason = DesiredBalance.ComputationFinishReason.STOP_EARLY;
+                break;
+            }
+            if (iterationTime.compareTo(maxIterationTime) >= 0) {
+                logger.info(
+                    "Desired balance computation for [{}] stopped after [{}] and [{}] iterations as max iteration time of [{}] reached",
+                    desiredBalanceInput.index(),
+                    i,
+                    iterationTime.toString(),
+                    maxIterationTime.toString()
+                );
                 break;
             }
 
@@ -416,7 +437,7 @@ public class DesiredBalanceComputer {
                         numIterationsSinceLastConverged,
                         numComputeCallsSinceLastConverged,
                         iterations,
-                        TimeValue.timeValueMillis(currentTime - computationStartedTime).toString()
+                        iterationTime.toString()
                     )
                 );
             } else {
