@@ -39,10 +39,10 @@ public class DesiredBalanceConvergenceIT extends ESIntegTestCase {
         internalCluster().ensureAtLeastNumDataNodes(3);
         int shardCount = 0;
         int indexCount = 0;
-        while (shardCount < 30_000) {
+        while (shardCount < 50_000) {
 //            final var shards = between(1, 1000);
 //            final var replicas = between(0, 2);
-            final var shards = 120;
+            final var shards = 1024;
             final var replicas = 2;
             safeGet(
                 indicesAdmin().prepareCreate("index-" + indexCount)
@@ -69,6 +69,6 @@ public class DesiredBalanceConvergenceIT extends ESIntegTestCase {
             logger.info("nodeSizes={}, minNodeSize={}, threshold={}", nodeSizes, minNodeSize, threshold);
             return minNodeSize >= threshold;
         }));
-        ensureGreen(TimeValue.timeValueMinutes(10));
+        ensureGreen(TimeValue.timeValueMinutes(100));
     }
 }

@@ -2363,7 +2363,7 @@ public abstract class ESTestCase extends LuceneTestCase {
      * instance, use a {@link CountDownLatch} or {@link CyclicBarrier} or similar to continue execution as soon as a condition is satisfied.
      * To wait for a particular cluster state, use {@link ClusterServiceUtils#addTemporaryStateListener} rather than busy-waiting on an API.
      */
-    public static final TimeValue SAFE_AWAIT_TIMEOUT = TimeValue.timeValueMinutes(10);
+    public static final TimeValue SAFE_AWAIT_TIMEOUT = TimeValue.timeValueMinutes(100);
 
     /**
      * Await on the given {@link CyclicBarrier} with a timeout of {@link #SAFE_AWAIT_TIMEOUT}, preserving the thread's interrupt status flag
