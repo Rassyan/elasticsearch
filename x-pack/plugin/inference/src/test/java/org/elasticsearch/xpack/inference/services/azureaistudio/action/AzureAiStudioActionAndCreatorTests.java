@@ -19,7 +19,6 @@ import org.elasticsearch.test.http.MockResponse;
 import org.elasticsearch.test.http.MockWebServer;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.xcontent.XContentType;
-import org.elasticsearch.xpack.core.inference.action.InferenceAction;
 import org.elasticsearch.xpack.core.inference.results.RankedDocsResultsTests;
 import org.elasticsearch.xpack.inference.InputTypeTests;
 import org.elasticsearch.xpack.inference.common.TruncatorTests;
@@ -46,7 +45,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.elasticsearch.xpack.core.inference.results.ChatCompletionResultsTests.buildExpectationCompletion;
-import static org.elasticsearch.xpack.core.inference.results.TextEmbeddingFloatResultsTests.buildExpectationFloat;
+import static org.elasticsearch.xpack.core.inference.results.DenseEmbeddingFloatResultsTests.buildExpectationFloat;
 import static org.elasticsearch.xpack.inference.Utils.inferenceUtilityExecutors;
 import static org.elasticsearch.xpack.inference.Utils.mockClusterServiceEmpty;
 import static org.elasticsearch.xpack.inference.external.http.Utils.entityAsMap;
@@ -90,8 +89,6 @@ public class AzureAiStudioActionAndCreatorTests extends ESTestCase {
         final var serviceComponents = getServiceComponents();
 
         try (var sender = createSender(senderFactory)) {
-            sender.start();
-
             webServer.enqueue(new MockResponse().setResponseCode(200).setBody(testEmbeddingsTokenResponseJson));
 
             final var model = AzureAiStudioEmbeddingsModelTests.createModel(
@@ -107,7 +104,7 @@ public class AzureAiStudioActionAndCreatorTests extends ESTestCase {
             final var action = creator.create(model, Map.of());
             final PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
             final var inputType = InputTypeTests.randomSearchAndIngestWithNull();
-            action.execute(new EmbeddingsInput(List.of("abc"), null, inputType), InferenceAction.Request.DEFAULT_TIMEOUT, listener);
+            action.execute(new EmbeddingsInput(List.of("abc"), inputType), null, listener);
 
             final var result = listener.actionGet(TIMEOUT);
 
@@ -129,8 +126,6 @@ public class AzureAiStudioActionAndCreatorTests extends ESTestCase {
         final var serviceComponents = getServiceComponents();
 
         try (var sender = createSender(senderFactory)) {
-            sender.start();
-
             webServer.enqueue(new MockResponse().setResponseCode(200).setBody(testCompletionTokenResponseJson));
             final var webserverUrl = getUrl(webServer);
             final var model = AzureAiStudioChatCompletionModelTests.createModel(
@@ -146,7 +141,7 @@ public class AzureAiStudioActionAndCreatorTests extends ESTestCase {
             final var action = creator.create(model, Map.of());
 
             final PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
-            action.execute(new ChatCompletionInput(List.of("abc")), InferenceAction.Request.DEFAULT_TIMEOUT, listener);
+            action.execute(new ChatCompletionInput(List.of("abc")), null, listener);
 
             final var result = listener.actionGet(TIMEOUT);
 
@@ -166,8 +161,6 @@ public class AzureAiStudioActionAndCreatorTests extends ESTestCase {
         final var serviceComponents = getServiceComponents();
 
         try (var sender = createSender(senderFactory)) {
-            sender.start();
-
             webServer.enqueue(new MockResponse().setResponseCode(200).setBody(testRerankTokenResponseJson));
             final var webserverUrl = getUrl(webServer);
             final var model = AzureAiStudioRerankModelTests.createModel(
@@ -188,11 +181,7 @@ public class AzureAiStudioActionAndCreatorTests extends ESTestCase {
             final var action = creator.create(model, Map.of());
 
             final PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
-            action.execute(
-                new QueryAndDocsInputs(query, documents, returnDocuments, topN, false),
-                InferenceAction.Request.DEFAULT_TIMEOUT,
-                listener
-            );
+            action.execute(new QueryAndDocsInputs(query, documents, returnDocuments, topN, false), null, listener);
 
             final var result = listener.actionGet(TIMEOUT);
 

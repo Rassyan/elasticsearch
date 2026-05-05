@@ -8,7 +8,6 @@
 package org.elasticsearch.xpack.inference.services.huggingface.completion;
 
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.ValidationException;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -50,6 +49,10 @@ public class HuggingFaceChatCompletionServiceSettings extends FilteredXContentOb
     // 3000 requests per minute
     private static final RateLimitSettings DEFAULT_RATE_LIMIT_SETTINGS = new RateLimitSettings(3000);
 
+    private static final TransportVersion ML_INFERENCE_HUGGING_FACE_CHAT_COMPLETION_ADDED = TransportVersion.fromName(
+        "ml_inference_hugging_face_chat_completion_added"
+    );
+
     /**
      * Creates a new instance of {@link HuggingFaceChatCompletionServiceSettings} from a map of settings.
      * @param map the map of settings
@@ -57,13 +60,13 @@ public class HuggingFaceChatCompletionServiceSettings extends FilteredXContentOb
      * @return a new instance of {@link HuggingFaceChatCompletionServiceSettings}
      */
     public static HuggingFaceChatCompletionServiceSettings fromMap(Map<String, Object> map, ConfigurationParseContext context) {
-        ValidationException validationException = new ValidationException();
+        var validationException = new ValidationException();
 
-        String modelId = extractOptionalString(map, MODEL_ID, ModelConfigurations.SERVICE_SETTINGS, validationException);
+        var modelId = extractOptionalString(map, MODEL_ID, ModelConfigurations.SERVICE_SETTINGS, validationException);
 
         var uri = extractUri(map, URL, validationException);
 
-        RateLimitSettings rateLimitSettings = RateLimitSettings.of(
+        var rateLimitSettings = RateLimitSettings.of(
             map,
             DEFAULT_RATE_LIMIT_SETTINGS,
             validationException,
@@ -71,10 +74,25 @@ public class HuggingFaceChatCompletionServiceSettings extends FilteredXContentOb
             context
         );
 
-        if (validationException.validationErrors().isEmpty() == false) {
-            throw validationException;
-        }
+        validationException.throwIfValidationErrorsExist();
         return new HuggingFaceChatCompletionServiceSettings(modelId, uri, rateLimitSettings);
+    }
+
+    @Override
+    public HuggingFaceChatCompletionServiceSettings updateServiceSettings(Map<String, Object> serviceSettings) {
+        var validationException = new ValidationException();
+
+        var extractedRateLimitSettings = RateLimitSettings.of(
+            serviceSettings,
+            this.rateLimitSettings,
+            validationException,
+            HuggingFaceService.NAME,
+            ConfigurationParseContext.REQUEST
+        );
+
+        validationException.throwIfValidationErrorsExist();
+
+        return new HuggingFaceChatCompletionServiceSettings(this.modelId, this.uri, extractedRateLimitSettings);
     }
 
     private final String modelId;
@@ -145,13 +163,12 @@ public class HuggingFaceChatCompletionServiceSettings extends FilteredXContentOb
     @Override
     public TransportVersion getMinimalSupportedVersion() {
         assert false : "should never be called when supportsVersion is used";
-        return TransportVersions.ML_INFERENCE_HUGGING_FACE_CHAT_COMPLETION_ADDED;
+        return ML_INFERENCE_HUGGING_FACE_CHAT_COMPLETION_ADDED;
     }
 
     @Override
     public boolean supportsVersion(TransportVersion version) {
-        return version.onOrAfter(TransportVersions.ML_INFERENCE_HUGGING_FACE_CHAT_COMPLETION_ADDED)
-            || version.isPatchFrom(TransportVersions.ML_INFERENCE_HUGGING_FACE_CHAT_COMPLETION_ADDED_8_19);
+        return version.supports(ML_INFERENCE_HUGGING_FACE_CHAT_COMPLETION_ADDED);
     }
 
     @Override

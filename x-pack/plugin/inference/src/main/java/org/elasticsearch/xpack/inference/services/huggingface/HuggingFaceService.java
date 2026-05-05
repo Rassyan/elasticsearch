@@ -7,13 +7,12 @@
 
 package org.elasticsearch.xpack.inference.services.huggingface;
 
-import org.elasticsearch.ElasticsearchStatusException;
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.TransportVersions;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.util.LazyInitializable;
 import org.elasticsearch.core.TimeValue;
+import org.elasticsearch.inference.ChunkInferenceInput;
 import org.elasticsearch.inference.ChunkedInference;
 import org.elasticsearch.inference.InferenceServiceConfiguration;
 import org.elasticsearch.inference.InferenceServiceExtension;
@@ -25,22 +24,24 @@ import org.elasticsearch.inference.SettingsConfiguration;
 import org.elasticsearch.inference.SimilarityMeasure;
 import org.elasticsearch.inference.TaskType;
 import org.elasticsearch.inference.configuration.SettingsConfigurationFieldType;
-import org.elasticsearch.rest.RestStatus;
-import org.elasticsearch.xpack.inference.chunking.EmbeddingRequestChunker;
+import org.elasticsearch.xpack.core.inference.chunking.EmbeddingRequestChunker;
 import org.elasticsearch.xpack.inference.external.action.SenderExecutableAction;
 import org.elasticsearch.xpack.inference.external.http.retry.ResponseHandler;
 import org.elasticsearch.xpack.inference.external.http.sender.EmbeddingsInput;
 import org.elasticsearch.xpack.inference.external.http.sender.GenericRequestManager;
 import org.elasticsearch.xpack.inference.external.http.sender.HttpRequestSender;
 import org.elasticsearch.xpack.inference.external.http.sender.UnifiedChatInput;
+import org.elasticsearch.xpack.inference.services.ModelCreator;
 import org.elasticsearch.xpack.inference.services.ServiceComponents;
 import org.elasticsearch.xpack.inference.services.ServiceUtils;
 import org.elasticsearch.xpack.inference.services.huggingface.action.HuggingFaceActionCreator;
 import org.elasticsearch.xpack.inference.services.huggingface.completion.HuggingFaceChatCompletionModel;
-import org.elasticsearch.xpack.inference.services.huggingface.elser.HuggingFaceElserModel;
+import org.elasticsearch.xpack.inference.services.huggingface.completion.HuggingFaceChatCompletionModelCreator;
+import org.elasticsearch.xpack.inference.services.huggingface.elser.HuggingFaceElserModelCreator;
 import org.elasticsearch.xpack.inference.services.huggingface.embeddings.HuggingFaceEmbeddingsModel;
+import org.elasticsearch.xpack.inference.services.huggingface.embeddings.HuggingFaceEmbeddingsModelCreator;
 import org.elasticsearch.xpack.inference.services.huggingface.request.completion.HuggingFaceUnifiedChatCompletionRequest;
-import org.elasticsearch.xpack.inference.services.huggingface.rerank.HuggingFaceRerankModel;
+import org.elasticsearch.xpack.inference.services.huggingface.rerank.HuggingFaceRerankModelCreator;
 import org.elasticsearch.xpack.inference.services.openai.response.OpenAiChatCompletionResponseEntity;
 import org.elasticsearch.xpack.inference.services.settings.DefaultSecretSettings;
 import org.elasticsearch.xpack.inference.services.settings.RateLimitSettings;
@@ -73,6 +74,19 @@ public class HuggingFaceService extends HuggingFaceBaseService implements Rerank
         "hugging face chat completion",
         OpenAiChatCompletionResponseEntity::fromResponse
     );
+    private static final HuggingFaceChatCompletionModelCreator COMPLETION_MODEL_CREATOR = new HuggingFaceChatCompletionModelCreator();
+    private static final Map<TaskType, ModelCreator<? extends HuggingFaceModel>> MODEL_CREATORS = Map.of(
+        TaskType.TEXT_EMBEDDING,
+        new HuggingFaceEmbeddingsModelCreator(),
+        TaskType.SPARSE_EMBEDDING,
+        new HuggingFaceElserModelCreator(),
+        TaskType.COMPLETION,
+        COMPLETION_MODEL_CREATOR,
+        TaskType.CHAT_COMPLETION,
+        COMPLETION_MODEL_CREATOR,
+        TaskType.RERANK,
+        new HuggingFaceRerankModelCreator()
+    );
 
     public HuggingFaceService(
         HttpRequestSender.Factory factory,
@@ -83,48 +97,7 @@ public class HuggingFaceService extends HuggingFaceBaseService implements Rerank
     }
 
     public HuggingFaceService(HttpRequestSender.Factory factory, ServiceComponents serviceComponents, ClusterService clusterService) {
-        super(factory, serviceComponents, clusterService);
-    }
-
-    @Override
-    protected HuggingFaceModel createModel(HuggingFaceModelParameters params) {
-        return switch (params.taskType()) {
-            case RERANK -> new HuggingFaceRerankModel(
-                params.inferenceEntityId(),
-                params.taskType(),
-                NAME,
-                params.serviceSettings(),
-                params.taskSettings(),
-                params.secretSettings(),
-                params.context()
-            );
-            case TEXT_EMBEDDING -> new HuggingFaceEmbeddingsModel(
-                params.inferenceEntityId(),
-                params.taskType(),
-                NAME,
-                params.serviceSettings(),
-                params.chunkingSettings(),
-                params.secretSettings(),
-                params.context()
-            );
-            case SPARSE_EMBEDDING -> new HuggingFaceElserModel(
-                params.inferenceEntityId(),
-                params.taskType(),
-                NAME,
-                params.serviceSettings(),
-                params.secretSettings(),
-                params.context()
-            );
-            case CHAT_COMPLETION, COMPLETION -> new HuggingFaceChatCompletionModel(
-                params.inferenceEntityId(),
-                params.taskType(),
-                NAME,
-                params.serviceSettings(),
-                params.secretSettings(),
-                params.context()
-            );
-            default -> throw new ElasticsearchStatusException(params.failureMessage(), RestStatus.BAD_REQUEST);
-        };
+        super(factory, serviceComponents, clusterService, MODEL_CREATORS);
     }
 
     @Override
@@ -151,7 +124,7 @@ public class HuggingFaceService extends HuggingFaceBaseService implements Rerank
     @Override
     protected void doChunkedInfer(
         Model model,
-        EmbeddingsInput inputs,
+        List<ChunkInferenceInput> inputs,
         Map<String, Object> taskSettings,
         InputType inputType,
         TimeValue timeout,
@@ -166,14 +139,14 @@ public class HuggingFaceService extends HuggingFaceBaseService implements Rerank
         var actionCreator = new HuggingFaceActionCreator(getSender(), getServiceComponents());
 
         List<EmbeddingRequestChunker.BatchRequestAndListener> batchedRequests = new EmbeddingRequestChunker<>(
-            inputs.getInputs(),
+            inputs,
             EMBEDDING_MAX_BATCH_SIZE,
             huggingFaceModel.getConfigurations().getChunkingSettings()
         ).batchRequestsWithListeners(listener);
 
         for (var request : batchedRequests) {
             var action = huggingFaceModel.accept(actionCreator);
-            action.execute(EmbeddingsInput.fromStrings(request.batch().inputs().get(), inputType), timeout, request.listener());
+            action.execute(new EmbeddingsInput(request.batch().inputs(), inputType), timeout, request.listener());
         }
     }
 
@@ -226,7 +199,7 @@ public class HuggingFaceService extends HuggingFaceBaseService implements Rerank
 
     @Override
     public TransportVersion getMinimalSupportedVersion() {
-        return TransportVersions.V_8_15_0;
+        return TransportVersion.minimumCompatible();
     }
 
     @Override
@@ -238,12 +211,12 @@ public class HuggingFaceService extends HuggingFaceBaseService implements Rerank
 
     public static class Configuration {
         public static InferenceServiceConfiguration get() {
-            return configuration.getOrCompute();
+            return CONFIGURATION.getOrCompute();
         }
 
         private Configuration() {}
 
-        private static final LazyInitializable<InferenceServiceConfiguration, RuntimeException> configuration = new LazyInitializable<>(
+        private static final LazyInitializable<InferenceServiceConfiguration, RuntimeException> CONFIGURATION = new LazyInitializable<>(
             () -> {
                 var configurationMap = new HashMap<String, SettingsConfiguration>();
 

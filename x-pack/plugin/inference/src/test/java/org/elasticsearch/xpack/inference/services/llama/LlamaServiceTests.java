@@ -30,34 +30,38 @@ import org.elasticsearch.inference.InferenceServiceResults;
 import org.elasticsearch.inference.InputType;
 import org.elasticsearch.inference.Model;
 import org.elasticsearch.inference.ModelConfigurations;
+import org.elasticsearch.inference.ModelSecrets;
+import org.elasticsearch.inference.ServiceSettings;
 import org.elasticsearch.inference.SimilarityMeasure;
 import org.elasticsearch.inference.TaskType;
 import org.elasticsearch.inference.UnifiedCompletionRequest;
+import org.elasticsearch.inference.completion.ContentString;
+import org.elasticsearch.inference.completion.Message;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.test.http.MockResponse;
 import org.elasticsearch.test.http.MockWebServer;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.xcontent.ToXContent;
 import org.elasticsearch.xcontent.XContentFactory;
 import org.elasticsearch.xcontent.XContentType;
-import org.elasticsearch.xpack.core.inference.action.InferenceAction;
+import org.elasticsearch.xpack.core.inference.chunking.ChunkingSettingsTests;
 import org.elasticsearch.xpack.core.inference.results.ChunkedInferenceEmbedding;
-import org.elasticsearch.xpack.core.inference.results.TextEmbeddingFloatResults;
+import org.elasticsearch.xpack.core.inference.results.DenseEmbeddingFloatResults;
 import org.elasticsearch.xpack.core.inference.results.UnifiedChatCompletionException;
-import org.elasticsearch.xpack.inference.chunking.ChunkingSettingsTests;
 import org.elasticsearch.xpack.inference.external.http.HttpClientManager;
 import org.elasticsearch.xpack.inference.external.http.sender.HttpRequestSender;
 import org.elasticsearch.xpack.inference.external.http.sender.HttpRequestSenderTests;
 import org.elasticsearch.xpack.inference.logging.ThrottlerManager;
 import org.elasticsearch.xpack.inference.services.AbstractInferenceServiceTests;
+import org.elasticsearch.xpack.inference.services.ConfigurationParseContext;
 import org.elasticsearch.xpack.inference.services.InferenceEventsAssertion;
-import org.elasticsearch.xpack.inference.services.SenderService;
 import org.elasticsearch.xpack.inference.services.ServiceFields;
 import org.elasticsearch.xpack.inference.services.llama.completion.LlamaChatCompletionModel;
 import org.elasticsearch.xpack.inference.services.llama.completion.LlamaChatCompletionModelTests;
+import org.elasticsearch.xpack.inference.services.llama.completion.LlamaChatCompletionServiceSettings;
 import org.elasticsearch.xpack.inference.services.llama.embeddings.LlamaEmbeddingsModel;
 import org.elasticsearch.xpack.inference.services.llama.embeddings.LlamaEmbeddingsModelTests;
 import org.elasticsearch.xpack.inference.services.llama.embeddings.LlamaEmbeddingsServiceSettings;
+import org.elasticsearch.xpack.inference.services.llama.embeddings.LlamaEmbeddingsServiceSettingsTests;
 import org.elasticsearch.xpack.inference.services.settings.DefaultSecretSettings;
 import org.elasticsearch.xpack.inference.services.settings.RateLimitSettings;
 import org.hamcrest.CoreMatchers;
@@ -77,19 +81,22 @@ import java.util.concurrent.TimeUnit;
 
 import static org.elasticsearch.ExceptionsHelper.unwrapCause;
 import static org.elasticsearch.common.xcontent.XContentHelper.toXContent;
+import static org.elasticsearch.inference.TaskType.CHAT_COMPLETION;
+import static org.elasticsearch.inference.TaskType.COMPLETION;
+import static org.elasticsearch.inference.TaskType.TEXT_EMBEDDING;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertToXContentEquivalent;
 import static org.elasticsearch.xcontent.ToXContent.EMPTY_PARAMS;
+import static org.elasticsearch.xpack.core.inference.chunking.ChunkingSettingsTests.createRandomChunkingSettingsMap;
 import static org.elasticsearch.xpack.inference.Utils.inferenceUtilityExecutors;
 import static org.elasticsearch.xpack.inference.Utils.mockClusterServiceEmpty;
-import static org.elasticsearch.xpack.inference.chunking.ChunkingSettingsTests.createRandomChunkingSettingsMap;
 import static org.elasticsearch.xpack.inference.external.http.Utils.entityAsMap;
 import static org.elasticsearch.xpack.inference.external.http.Utils.getUrl;
 import static org.elasticsearch.xpack.inference.services.ServiceComponentsTests.createWithEmptySettings;
 import static org.elasticsearch.xpack.inference.services.llama.completion.LlamaChatCompletionModelTests.createChatCompletionModel;
-import static org.elasticsearch.xpack.inference.services.llama.completion.LlamaChatCompletionServiceSettingsTests.getServiceSettingsMap;
-import static org.elasticsearch.xpack.inference.services.llama.embeddings.LlamaEmbeddingsServiceSettingsTests.buildServiceSettingsMap;
+import static org.elasticsearch.xpack.inference.services.llama.completion.LlamaChatCompletionServiceSettingsTests.buildServiceSettingsMap;
 import static org.elasticsearch.xpack.inference.services.settings.DefaultSecretSettingsTests.getSecretSettingsMap;
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.instanceOf;
@@ -106,87 +113,132 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
         super(createTestConfiguration());
     }
 
-    private static TestConfiguration createTestConfiguration() {
-        return new TestConfiguration.Builder(new CommonConfig(TaskType.TEXT_EMBEDDING, TaskType.SPARSE_EMBEDDING) {
+    public static TestConfiguration createTestConfiguration() {
+        return new TestConfiguration.Builder(
+            new CommonConfig(TEXT_EMBEDDING, TaskType.SPARSE_EMBEDDING, EnumSet.of(TEXT_EMBEDDING, COMPLETION, CHAT_COMPLETION)) {
 
-            @Override
-            protected SenderService createService(ThreadPool threadPool, HttpClientManager clientManager) {
-                return LlamaServiceTests.createService(threadPool, clientManager);
-            }
+                @Override
+                protected LlamaService createService(ThreadPool threadPool, HttpClientManager clientManager) {
+                    return LlamaServiceTests.createService(threadPool, clientManager);
+                }
 
-            @Override
-            protected Map<String, Object> createServiceSettingsMap(TaskType taskType) {
-                return LlamaServiceTests.createServiceSettingsMap(taskType);
-            }
+                @Override
+                protected Map<String, Object> createServiceSettingsMap(TaskType taskType) {
+                    return LlamaServiceTests.createServiceSettingsMap(taskType);
+                }
 
-            @Override
-            protected Map<String, Object> createTaskSettingsMap() {
-                return new HashMap<>();
-            }
+                @Override
+                protected ModelConfigurations createModelConfigurations(TaskType taskType) {
+                    return switch (taskType) {
+                        case TEXT_EMBEDDING -> new ModelConfigurations(
+                            "some_inference_id",
+                            taskType,
+                            LlamaService.NAME,
+                            LlamaEmbeddingsServiceSettings.fromMap(
+                                createServiceSettingsMap(taskType),
+                                ConfigurationParseContext.PERSISTENT
+                            ),
+                            EmptyTaskSettings.INSTANCE
+                        );
+                        case COMPLETION, CHAT_COMPLETION -> new ModelConfigurations(
+                            "some_inference_id",
+                            taskType,
+                            LlamaService.NAME,
+                            LlamaChatCompletionServiceSettings.fromMap(
+                                createServiceSettingsMap(taskType),
+                                ConfigurationParseContext.PERSISTENT
+                            ),
+                            EmptyTaskSettings.INSTANCE
+                        );
+                        // Sparse embedding is not supported, but in order to test unsupported task types it is included here
+                        case SPARSE_EMBEDDING -> new ModelConfigurations(
+                            "some_inference_id",
+                            taskType,
+                            LlamaService.NAME,
+                            mock(ServiceSettings.class),
+                            EmptyTaskSettings.INSTANCE
+                        );
+                        default -> throw new IllegalStateException("Unexpected value: " + taskType);
+                    };
+                }
 
-            @Override
-            protected Map<String, Object> createSecretSettingsMap() {
-                return LlamaServiceTests.createSecretSettingsMap();
-            }
+                @Override
+                protected ModelSecrets createModelSecrets(ConfigurationParseContext context) {
+                    return new ModelSecrets(DefaultSecretSettings.fromMap(createSecretSettingsMap(), context));
+                }
 
-            @Override
-            protected void assertModel(Model model, TaskType taskType) {
-                LlamaServiceTests.assertModel(model, taskType);
-            }
+                @Override
+                protected Map<String, Object> createTaskSettingsMap() {
+                    return new HashMap<>();
+                }
 
-            @Override
-            protected EnumSet<TaskType> supportedStreamingTasks() {
-                return EnumSet.of(TaskType.CHAT_COMPLETION, TaskType.COMPLETION);
+                @Override
+                protected Map<String, Object> createSecretSettingsMap() {
+                    return LlamaServiceTests.createSecretSettingsMap();
+                }
+
+                @Override
+                protected void assertModel(Model model, TaskType taskType, boolean modelIncludesSecrets) {
+                    LlamaServiceTests.assertModel(model, taskType, modelIncludesSecrets);
+                }
+
+                @Override
+                protected EnumSet<TaskType> supportedStreamingTasks() {
+                    return EnumSet.of(CHAT_COMPLETION, COMPLETION);
+                }
             }
-        }).enableUpdateModelTests(new UpdateModelConfiguration() {
+        ).enableUpdateModelTests(new UpdateModelConfiguration() {
             @Override
-            protected LlamaEmbeddingsModel createEmbeddingModel(SimilarityMeasure similarityMeasure) {
+            protected LlamaEmbeddingsModel createEmbeddingModel(SimilarityMeasure similarityMeasure, TaskType taskType) {
                 return createInternalEmbeddingModel(similarityMeasure);
             }
         }).build();
     }
 
-    private static void assertModel(Model model, TaskType taskType) {
+    private static void assertModel(Model model, TaskType taskType, boolean modelIncludesSecrets) {
         switch (taskType) {
-            case TEXT_EMBEDDING -> assertTextEmbeddingModel(model);
-            case COMPLETION -> assertCompletionModel(model);
-            case CHAT_COMPLETION -> assertChatCompletionModel(model);
+            case TEXT_EMBEDDING -> assertTextEmbeddingModel(model, modelIncludesSecrets);
+            case COMPLETION -> assertCompletionModel(model, modelIncludesSecrets);
+            case CHAT_COMPLETION -> assertChatCompletionModel(model, modelIncludesSecrets);
             default -> fail("unexpected task type [" + taskType + "]");
         }
     }
 
-    private static void assertTextEmbeddingModel(Model model) {
-        var llamaModel = assertCommonModelFields(model);
+    private static void assertTextEmbeddingModel(Model model, boolean modelIncludesSecrets) {
+        var llamaModel = assertCommonModelFields(model, modelIncludesSecrets);
 
-        assertThat(llamaModel.getTaskType(), Matchers.is(TaskType.TEXT_EMBEDDING));
+        assertThat(llamaModel.getTaskType(), Matchers.is(TEXT_EMBEDDING));
     }
 
-    private static LlamaModel assertCommonModelFields(Model model) {
+    private static LlamaModel assertCommonModelFields(Model model, boolean modelIncludesSecrets) {
         assertThat(model, instanceOf(LlamaModel.class));
 
         var llamaModel = (LlamaModel) model;
         assertThat(llamaModel.getServiceSettings().modelId(), is("model_id"));
         assertThat(llamaModel.uri.toString(), Matchers.is("http://www.abc.com"));
         assertThat(llamaModel.getTaskSettings(), Matchers.is(EmptyTaskSettings.INSTANCE));
-        assertThat(
-            ((DefaultSecretSettings) llamaModel.getSecretSettings()).apiKey(),
-            Matchers.is(new SecureString("secret".toCharArray()))
-        );
+
+        if (modelIncludesSecrets) {
+            assertThat(
+                ((DefaultSecretSettings) llamaModel.getSecretSettings()).apiKey(),
+                Matchers.is(new SecureString("secret".toCharArray()))
+            );
+        }
 
         return llamaModel;
     }
 
-    private static void assertCompletionModel(Model model) {
-        var llamaModel = assertCommonModelFields(model);
-        assertThat(llamaModel.getTaskType(), Matchers.is(TaskType.COMPLETION));
+    private static void assertCompletionModel(Model model, boolean modelIncludesSecrets) {
+        var llamaModel = assertCommonModelFields(model, modelIncludesSecrets);
+        assertThat(llamaModel.getTaskType(), Matchers.is(COMPLETION));
     }
 
-    private static void assertChatCompletionModel(Model model) {
-        var llamaModel = assertCommonModelFields(model);
-        assertThat(llamaModel.getTaskType(), Matchers.is(TaskType.CHAT_COMPLETION));
+    private static void assertChatCompletionModel(Model model, boolean modelIncludesSecrets) {
+        var llamaModel = assertCommonModelFields(model, modelIncludesSecrets);
+        assertThat(llamaModel.getTaskType(), Matchers.is(CHAT_COMPLETION));
     }
 
-    public static SenderService createService(ThreadPool threadPool, HttpClientManager clientManager) {
+    public static LlamaService createService(ThreadPool threadPool, HttpClientManager clientManager) {
         var senderFactory = HttpRequestSenderTests.createSenderFactory(threadPool, clientManager);
         return new LlamaService(senderFactory, createWithEmptySettings(threadPool), mockClusterServiceEmpty());
     }
@@ -196,7 +248,7 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
             Map.of(ServiceFields.URL, "http://www.abc.com", ServiceFields.MODEL_ID, "model_id")
         );
 
-        if (taskType == TaskType.TEXT_EMBEDDING) {
+        if (taskType == TEXT_EMBEDDING) {
             settingsMap.putAll(
                 Map.of(
                     ServiceFields.SIMILARITY,
@@ -221,7 +273,7 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
 
         return new LlamaEmbeddingsModel(
             inferenceId,
-            TaskType.TEXT_EMBEDDING,
+            TEXT_EMBEDDING,
             LlamaService.NAME,
             new LlamaEmbeddingsServiceSettings(
                 "model_id",
@@ -234,10 +286,6 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
             ChunkingSettingsTests.createRandomChunkingSettings(),
             new DefaultSecretSettings(new SecureString("secret".toCharArray()))
         );
-    }
-
-    protected String fetchPersistedConfigTaskTypeParsingErrorMessageFormat() {
-        return "Failed to parse stored model [id] for [llama] service, please delete and add the service again";
     }
 
     @Before
@@ -267,9 +315,9 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
 
             service.parseRequestConfig(
                 "id",
-                TaskType.TEXT_EMBEDDING,
+                TEXT_EMBEDDING,
                 getRequestConfigMap(
-                    getServiceSettingsMap("model", "url"),
+                    LlamaEmbeddingsServiceSettingsTests.buildServiceSettingsMap("model", "url", null, null, null, null),
                     createRandomChunkingSettingsMap(),
                     getSecretSettingsMap("secret")
                 ),
@@ -291,9 +339,9 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
 
             service.parseRequestConfig(
                 "id",
-                TaskType.TEXT_EMBEDDING,
+                TEXT_EMBEDDING,
                 getRequestConfigMap(
-                    getServiceSettingsMap("model", "url"),
+                    LlamaEmbeddingsServiceSettingsTests.buildServiceSettingsMap("model", "url", null, null, null, null),
                     createRandomChunkingSettingsMap(),
                     getSecretSettingsMap("secret")
                 ),
@@ -326,8 +374,8 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
 
             service.parseRequestConfig(
                 "id",
-                TaskType.CHAT_COMPLETION,
-                getRequestConfigMap(getServiceSettingsMap(null, url), getSecretSettingsMap(secret)),
+                CHAT_COMPLETION,
+                getRequestConfigMap(buildServiceSettingsMap(null, url, null), getSecretSettingsMap(secret)),
                 modelVerificationListener
             );
         }
@@ -357,8 +405,8 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
 
             service.parseRequestConfig(
                 "id",
-                TaskType.CHAT_COMPLETION,
-                getRequestConfigMap(getServiceSettingsMap(model, null), getSecretSettingsMap(secret)),
+                CHAT_COMPLETION,
+                getRequestConfigMap(buildServiceSettingsMap(model, null, null), getSecretSettingsMap(secret)),
                 modelVerificationListener
             );
         }
@@ -399,10 +447,8 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
             PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
             service.unifiedCompletionInfer(
                 model,
-                UnifiedCompletionRequest.of(
-                    List.of(new UnifiedCompletionRequest.Message(new UnifiedCompletionRequest.ContentString("hello"), "user", null, null))
-                ),
-                InferenceAction.Request.DEFAULT_TIMEOUT,
+                UnifiedCompletionRequest.of(List.of(new Message(new ContentString("hello"), "user", null, null))),
+                null,
                 listener
             );
 
@@ -435,14 +481,12 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
 
         var senderFactory = HttpRequestSenderTests.createSenderFactory(threadPool, clientManager);
         try (var service = new LlamaService(senderFactory, createWithEmptySettings(threadPool), mockClusterServiceEmpty())) {
-            var model = LlamaChatCompletionModelTests.createChatCompletionModel("model", getUrl(webServer), "secret");
+            var model = createChatCompletionModel("model", getUrl(webServer), "secret");
             var latch = new CountDownLatch(1);
             service.unifiedCompletionInfer(
                 model,
-                UnifiedCompletionRequest.of(
-                    List.of(new UnifiedCompletionRequest.Message(new UnifiedCompletionRequest.ContentString("hello"), "user", null, null))
-                ),
-                InferenceAction.Request.DEFAULT_TIMEOUT,
+                UnifiedCompletionRequest.of(List.of(new Message(new ContentString("hello"), "user", null, null))),
+                null,
                 ActionListener.runAfter(ActionTestUtils.assertNoSuccessListener(e -> {
                     try (var builder = XContentFactory.jsonBuilder()) {
                         var t = unwrapCause(e);
@@ -525,14 +569,12 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
     private void testStreamError(String expectedResponse) throws Exception {
         var senderFactory = HttpRequestSenderTests.createSenderFactory(threadPool, clientManager);
         try (var service = new LlamaService(senderFactory, createWithEmptySettings(threadPool), mockClusterServiceEmpty())) {
-            var model = LlamaChatCompletionModelTests.createChatCompletionModel("model", getUrl(webServer), "secret");
+            var model = createChatCompletionModel("model", getUrl(webServer), "secret");
             PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
             service.unifiedCompletionInfer(
                 model,
-                UnifiedCompletionRequest.of(
-                    List.of(new UnifiedCompletionRequest.Message(new UnifiedCompletionRequest.ContentString("hello"), "user", null, null))
-                ),
-                InferenceAction.Request.DEFAULT_TIMEOUT,
+                UnifiedCompletionRequest.of(List.of(new Message(new ContentString("hello"), "user", null, null))),
+                null,
                 listener
             );
 
@@ -611,7 +653,7 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
 
     public void testSupportsStreaming() throws IOException {
         try (var service = new LlamaService(mock(), createWithEmptySettings(mock()), mockClusterServiceEmpty())) {
-            assertThat(service.supportedStreamingTasks(), is(EnumSet.of(TaskType.COMPLETION, TaskType.CHAT_COMPLETION)));
+            assertThat(service.supportedStreamingTasks(), is(EnumSet.of(COMPLETION, CHAT_COMPLETION)));
             assertFalse(service.canStream(TaskType.ANY));
         }
     }
@@ -621,7 +663,17 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
             var secretSettings = getSecretSettingsMap("secret");
             secretSettings.put("extra_key", "value");
 
-            var config = getRequestConfigMap(getEmbeddingsServiceSettingsMap(), secretSettings);
+            var config = getRequestConfigMap(
+                LlamaEmbeddingsServiceSettingsTests.buildServiceSettingsMap(
+                    "id",
+                    "url",
+                    null,
+                    SimilarityMeasure.COSINE.toString(),
+                    null,
+                    null
+                ),
+                secretSettings
+            );
 
             ActionListener<Model> modelVerificationListener = ActionListener.wrap(
                 model -> fail("Expected exception, but got model: " + model),
@@ -634,7 +686,7 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
                 }
             );
 
-            service.parseRequestConfig("id", TaskType.TEXT_EMBEDDING, config, modelVerificationListener);
+            service.parseRequestConfig("id", TEXT_EMBEDDING, config, modelVerificationListener);
         }
     }
 
@@ -650,6 +702,23 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
         model.setURI(getUrl(webServer));
 
         testChunkedInfer(model);
+    }
+
+    public void testChunkedInfer_noInputs() throws IOException {
+        var model = LlamaEmbeddingsModelTests.createEmbeddingsModelWithChunkingSettings("id", "url", "api_key");
+        model.setURI(getUrl(webServer));
+
+        var senderFactory = HttpRequestSenderTests.createSenderFactory(threadPool, clientManager);
+
+        try (var service = new LlamaService(senderFactory, createWithEmptySettings(threadPool), mockClusterServiceEmpty())) {
+            PlainActionFuture<List<ChunkedInference>> listener = new PlainActionFuture<>();
+            service.chunkedInfer(model, null, List.of(), new HashMap<>(), InputType.INTERNAL_INGEST, null, listener);
+
+            var results = listener.actionGet(TIMEOUT);
+
+            assertThat(results, empty());
+            assertThat(webServer.requests(), empty());
+        }
     }
 
     public void testChunkedInfer(LlamaEmbeddingsModel model) throws IOException {
@@ -680,7 +749,7 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
                 List.of(new ChunkInferenceInput("abc"), new ChunkInferenceInput("def")),
                 new HashMap<>(),
                 InputType.INTERNAL_INGEST,
-                InferenceAction.Request.DEFAULT_TIMEOUT,
+                null,
                 listener
             );
 
@@ -691,11 +760,11 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
                 assertThat(results.get(0), CoreMatchers.instanceOf(ChunkedInferenceEmbedding.class));
                 var floatResult = (ChunkedInferenceEmbedding) results.get(0);
                 assertThat(floatResult.chunks(), hasSize(1));
-                assertThat(floatResult.chunks().get(0).embedding(), Matchers.instanceOf(TextEmbeddingFloatResults.Embedding.class));
+                assertThat(floatResult.chunks().get(0).embedding(), instanceOf(DenseEmbeddingFloatResults.Embedding.class));
                 assertTrue(
                     Arrays.equals(
                         new float[] { 0.010060793f, -0.0017529363f },
-                        ((TextEmbeddingFloatResults.Embedding) floatResult.chunks().get(0).embedding()).values()
+                        ((DenseEmbeddingFloatResults.Embedding) floatResult.chunks().get(0).embedding()).values()
                     )
                 );
             }
@@ -703,11 +772,11 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
                 assertThat(results.get(1), CoreMatchers.instanceOf(ChunkedInferenceEmbedding.class));
                 var floatResult = (ChunkedInferenceEmbedding) results.get(1);
                 assertThat(floatResult.chunks(), hasSize(1));
-                assertThat(floatResult.chunks().get(0).embedding(), Matchers.instanceOf(TextEmbeddingFloatResults.Embedding.class));
+                assertThat(floatResult.chunks().get(0).embedding(), instanceOf(DenseEmbeddingFloatResults.Embedding.class));
                 assertTrue(
                     Arrays.equals(
                         new float[] { 0.110060793f, -0.1017529363f },
-                        ((TextEmbeddingFloatResults.Embedding) floatResult.chunks().get(0).embedding()).values()
+                        ((DenseEmbeddingFloatResults.Embedding) floatResult.chunks().get(0).embedding()).values()
                     )
                 );
             }
@@ -779,7 +848,7 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
                 XContentType.JSON
             );
             boolean humanReadable = true;
-            BytesReference originalBytes = toShuffledXContent(configuration, XContentType.JSON, ToXContent.EMPTY_PARAMS, humanReadable);
+            BytesReference originalBytes = toShuffledXContent(configuration, XContentType.JSON, EMPTY_PARAMS, humanReadable);
             InferenceServiceConfiguration serviceConfiguration = service.getConfiguration();
             assertToXContentEquivalent(
                 originalBytes,
@@ -794,18 +863,7 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
         try (var service = new LlamaService(senderFactory, createWithEmptySettings(threadPool), mockClusterServiceEmpty())) {
             var model = LlamaChatCompletionModelTests.createCompletionModel("model", getUrl(webServer), "secret");
             PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
-            service.infer(
-                model,
-                null,
-                null,
-                null,
-                List.of("abc"),
-                true,
-                new HashMap<>(),
-                InputType.INGEST,
-                InferenceAction.Request.DEFAULT_TIMEOUT,
-                listener
-            );
+            service.infer(model, null, null, null, List.of("abc"), true, new HashMap<>(), InputType.INGEST, null, listener);
 
             return InferenceEventsAssertion.assertThat(listener.actionGet(TIMEOUT)).hasFinishedStream();
         }
@@ -832,10 +890,6 @@ public class LlamaServiceTests extends AbstractInferenceServiceTests {
         builtServiceSettings.putAll(secretSettings);
 
         return new HashMap<>(Map.of(ModelConfigurations.SERVICE_SETTINGS, builtServiceSettings));
-    }
-
-    private static Map<String, Object> getEmbeddingsServiceSettingsMap() {
-        return buildServiceSettingsMap("id", "url", SimilarityMeasure.COSINE.toString(), null, null, null);
     }
 
     @Override
