@@ -882,10 +882,6 @@ public abstract class ESTestCase extends LuceneTestCase {
             "JMX runtime input lookup class is not available because this JRE does not support JMX. "
                 + "JMX lookups will not be available, continuing configuration. "
         ),
-        // TODO migrate to annotation processor https://github.com/elastic/elasticsearch/issues/135022
-        startsWith("The use of package scanning to locate Log4j plugins is deprecated."),
-        startsWith("Some custom `Core` Log4j plugins are not properly registered"),
-        startsWith("Some custom `Converter` Log4j plugins are not properly registered"),
         startsWith("No Root logger was configured, creating default ERROR-level Root logger with Console appender")
     );
 
@@ -899,7 +895,7 @@ public abstract class ESTestCase extends LuceneTestCase {
                 assertThat(statusData, everyItem(new TypeSafeMatcher<StatusData>() {
                     @Override
                     protected boolean matchesSafely(StatusData item) {
-                        return LOG_4J_MSG_PREFIXES.matches(item.getFormattedStatus());
+                        return LOG_4J_MSG_PREFIXES.matches(item.getMessage().getFormattedMessage());
                     }
 
                     @Override
